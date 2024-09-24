@@ -4,6 +4,7 @@ import koaQs from 'koa-qs';
 import bodyParser from 'koa-bodyparser';
 import createRouter from 'koa-zod-router';
 import { z, ZodError } from 'zod';
+import { v4 as uuidv4 } from 'uuid';  // Use UUIDs for book IDs
 import bookCatalog from '../mcmasteful-book-list.json';
 
 const app = new Koa();
@@ -37,8 +38,9 @@ koaQs(app);
 app.use(cors());
 app.use(bodyParser());
 
-// Define the Book interface
+// Define the Book interface with an optional id
 export interface Book {
+  id?: string;
   name: string;
   author: string;
   description: string;
@@ -46,10 +48,13 @@ export interface Book {
   image: string;
 }
 
-// Load books data from JSON file.
-const books = bookCatalog as Book[];
+// Load books data from JSON file, assigning IDs if not already present
+let books: Book[] = (bookCatalog as Book[]).map((book) => ({
+  ...book,
+  id: book.id || uuidv4(),  // Ensure every book has a unique id
+}));
 
-// Define the Filter schema
+// Define the Filter schema for query parameters
 const FilterSchema = z.object({
   filters: z
     .array(
@@ -61,10 +66,20 @@ const FilterSchema = z.object({
     .optional(),
 });
 
+// Define the schema for adding/updating books, now with `id`
+const BookSchema = z.object({
+  id: z.string().optional(),  // Optional for adding, required for updating
+  name: z.string(),
+  author: z.string(),
+  description: z.string(),
+  price: z.number(),
+  image: z.string(),
+});
+
 // Creates router
 const router = createRouter();
 
-// Defeault endpoint enhanced to apply specific price range filters
+// Get endpoint to filter books by price range
 router.get('/', async (ctx) => {
   // Validate query parameters
   const parseResult = FilterSchema.safeParse(ctx.request.query);
@@ -89,8 +104,55 @@ router.get('/', async (ctx) => {
     });
   }
 
-  // Return the appropriate bookList
+  // Return the appropriate book list
   ctx.body = filteredBooks;
+});
+
+// POST endpoint to add a new book
+router.post('/book', async (ctx) => {
+  const parseResult = BookSchema.safeParse(ctx.request.body);
+  if (!parseResult.success) {
+    throw parseResult.error;
+  }
+
+  const newBook = { ...parseResult.data, id: uuidv4() };  // Assign a unique ID
+  books.push(newBook);
+  ctx.status = 201;  // Created
+  ctx.body = { message: 'Book added successfully', book: newBook };
+});
+
+// PUT endpoint to update an existing book by ID
+router.put('/book/:id', async (ctx) => {
+  const { id } = ctx.params;
+  const parseResult = BookSchema.safeParse(ctx.request.body);
+  if (!parseResult.success) {
+    throw parseResult.error;
+  }
+
+  const updatedBook = parseResult.data;
+  const bookIndex = books.findIndex((book) => book.id === id);
+
+  if (bookIndex !== -1) {
+    books[bookIndex] = { ...updatedBook, id };  // Ensure the ID is not changed
+    ctx.body = { message: 'Book updated successfully', book: books[bookIndex] };
+  } else {
+    ctx.status = 404;
+    ctx.body = { message: 'Book not found' };
+  }
+});
+
+// DELETE endpoint to remove a book by ID
+router.delete('/book/:id', async (ctx) => {
+  const { id } = ctx.params;
+  const bookIndex = books.findIndex((book) => book.id === id);
+
+  if (bookIndex !== -1) {
+    books.splice(bookIndex, 1);
+    ctx.body = { message: 'Book removed successfully' };
+  } else {
+    ctx.status = 404;
+    ctx.body = { message: 'Book not found' };
+  }
 });
 
 // Use router
