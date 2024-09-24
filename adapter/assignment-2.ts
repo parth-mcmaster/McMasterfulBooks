@@ -54,13 +54,13 @@ async function createOrUpdateBook(book: Book): Promise<BookID> {
 
 // Function to remove a book by ID
 async function removeBook(bookId: BookID): Promise<void> {
-  const response = await fetch(`/book/${bookId}`, {
-    method: "DELETE",
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to delete book");
-  }
+    const response = await fetch(`/book/${bookId}`, {
+      method: "DELETE",
+    });
+  
+    if (!response.ok) {
+      throw new Error("Failed to delete book");
+    }
 }
 
 const assignment = "assignment-2";

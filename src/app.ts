@@ -4,12 +4,30 @@ import koaQs from 'koa-qs';
 import bodyParser from 'koa-bodyparser';
 import createRouter from 'koa-zod-router';
 import { z, ZodError } from 'zod';
-import { v4 as uuidv4 } from 'uuid';  // Use UUIDs for book IDs
-import bookCatalog from '../mcmasteful-book-list.json';
+import { Collection, MongoClient, ObjectId } from 'mongodb';
+import { v4 as uuidv4 } from 'uuid';  // For generating unique IDs
 
 const app = new Koa();
 
-// Server side Error handling
+// MongoDB connection
+const uri = "mongodb://localhost:27017"; 
+const client = new MongoClient(uri);
+
+let booksCollection: Collection<Book>;
+
+async function connectToDatabase() {
+  try {
+    await client.connect();
+    const database = client.db("bookStore");  // Database name: bookstore
+    booksCollection = database.collection("books");  // Collection: books
+    console.log("Connected to MongoDB");
+  } catch (err) {
+    console.error("Error connecting to MongoDB", err);
+  }
+}
+connectToDatabase();
+
+// Server-side error handling
 app.use(async (ctx, next) => {
   try {
     await next();
@@ -38,7 +56,7 @@ koaQs(app);
 app.use(cors());
 app.use(bodyParser());
 
-// Define the Book interface with an optional id
+// Define the Book interface (with optional `id` field)
 export interface Book {
   id?: string;
   name: string;
@@ -47,12 +65,6 @@ export interface Book {
   price: number;
   image: string;
 }
-
-// Load books data from JSON file, assigning IDs if not already present
-let books: Book[] = (bookCatalog as Book[]).map((book) => ({
-  ...book,
-  id: book.id || uuidv4(),  // Ensure every book has a unique id
-}));
 
 // Define the Filter schema for query parameters
 const FilterSchema = z.object({
@@ -66,7 +78,7 @@ const FilterSchema = z.object({
     .optional(),
 });
 
-// Define the schema for adding/updating books, now with `id`
+// Define the schema for adding/updating books
 const BookSchema = z.object({
   id: z.string().optional(),  // Optional for adding, required for updating
   name: z.string(),
@@ -79,49 +91,57 @@ const BookSchema = z.object({
 // Creates router
 const router = createRouter();
 
-// Get endpoint to filter books by price range
+// GET endpoint: Fetch all books, applying optional price filters
 router.get('/', async (ctx) => {
-  // Validate query parameters
   const parseResult = FilterSchema.safeParse(ctx.request.query);
 
   if (!parseResult.success) {
-    // Validation Error for query parameters
     throw parseResult.error;
   }
 
   const { filters } = parseResult.data;
+  let query = {};
 
-  let filteredBooks = books;
-
-  // Apply filters
+  // Apply filters based on price range
   if (filters && filters.length > 0) {
-    filteredBooks = filteredBooks.filter((book) => {
-      return filters.some((filter) => {
+    query = {
+      $or: filters.map((filter) => {
         const from = filter.from ?? Number.NEGATIVE_INFINITY;
         const to = filter.to ?? Number.POSITIVE_INFINITY;
-        return book.price >= from && book.price <= to;
-      });
-    });
+        return { price: { $gte: from, $lte: to } };
+      }),
+    };
   }
 
-  // Return the appropriate book list
-  ctx.body = filteredBooks;
+  const books = await booksCollection.find(query).toArray();
+
+  // Map `_id` to `id` for older books and remove `_id` from response
+  ctx.body = books.map((book) => ({
+    ...book,
+    id: book.id || book._id.toString(),  // Use `_id` if `id` is missing
+    _id: undefined,  // Remove `_id` from the response
+  }));
 });
 
-// POST endpoint to add a new book
+// POST endpoint: Add a new book (assign a unique `id` if not provided)
 router.post('/book', async (ctx) => {
   const parseResult = BookSchema.safeParse(ctx.request.body);
   if (!parseResult.success) {
     throw parseResult.error;
   }
 
-  const newBook = { ...parseResult.data, id: uuidv4() };  // Assign a unique ID
-  books.push(newBook);
+  const newBook = {
+    ...parseResult.data,
+    id: uuidv4(),  // Generate a new unique `id`
+  };
+
+  await booksCollection.insertOne(newBook);
+
   ctx.status = 201;  // Created
   ctx.body = { message: 'Book added successfully', book: newBook };
 });
 
-// PUT endpoint to update an existing book by ID
+// PUT endpoint: Update an existing book by `id`
 router.put('/book/:id', async (ctx) => {
   const { id } = ctx.params;
   const parseResult = BookSchema.safeParse(ctx.request.body);
@@ -130,28 +150,29 @@ router.put('/book/:id', async (ctx) => {
   }
 
   const updatedBook = parseResult.data;
-  const bookIndex = books.findIndex((book) => book.id === id);
+  const result = await booksCollection.updateOne(
+    { _id: new ObjectId(id) },  // Match by MongoDB's `_id`
+    { $set: updatedBook }
+  );
 
-  if (bookIndex !== -1) {
-    books[bookIndex] = { ...updatedBook, id };  // Ensure the ID is not changed
-    ctx.body = { message: 'Book updated successfully', book: books[bookIndex] };
-  } else {
+  if (result.matchedCount === 0) {
     ctx.status = 404;
     ctx.body = { message: 'Book not found' };
+  } else {
+    ctx.body = { message: 'Book updated successfully', book: updatedBook };
   }
 });
 
-// DELETE endpoint to remove a book by ID
+// DELETE endpoint: Remove a book by `id`
 router.delete('/book/:id', async (ctx) => {
   const { id } = ctx.params;
-  const bookIndex = books.findIndex((book) => book.id === id);
+  const result = await booksCollection.deleteOne({ _id: new ObjectId(id) });
 
-  if (bookIndex !== -1) {
-    books.splice(bookIndex, 1);
-    ctx.body = { message: 'Book removed successfully' };
-  } else {
+  if (result.deletedCount === 0) {
     ctx.status = 404;
     ctx.body = { message: 'Book not found' };
+  } else {
+    ctx.body = { message: 'Book removed successfully' };
   }
 });
 

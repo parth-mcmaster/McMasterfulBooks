@@ -5,7 +5,9 @@
   "main": "index.ts",
   "scripts": {
     "tsync": "npx typesync && npm install",
-    "start-server": "tsx ./src/index.ts"
+    "start-server": "tsx ./src/index.ts",
+    "mongo:export": "mongoexport --db=bookStore --collection=books --out=./data/books.json",
+    "mongo:import": "mongoimport --db=bookStore --collection=books --file=books.json"
   },
   "keywords": [],
   "author": "",
